@@ -1,71 +1,77 @@
-Aliasing End-to-End — Dataset, Classifiers, and Downstream Tasks
+🔊 Aliasing End-to-End
+Dataset Construction • Aliasing Classifiers • LSTM Grid Search • Downstream Task Difficulty
 
-This repository accompanies a study of aliasing in environmental audio. It provides:
+This repository contains a complete pipeline for constructing aliasing-controlled audio datasets, training binary aliasing detectors, and evaluating how aliasing affects downstream sound-classification tasks.
 
-A deterministic dataset builder that produces paired unfiltered (aliased) and filtered (anti-aliased) versions of 1-second chunks at multiple target sample rates.
+It provides:
 
-Aliasing presence classifiers (traditional ML + LSTM grid search) that predict whether a chunk contains aliasing.
+Deterministic STFT and MFCC feature datasets
 
-Downstream task analysis that measures how aliasing impacts standard audio classification (class label prediction) when models train/test on only filtered vs only unfiltered data.
+Paired filtered (anti-aliased) and unfiltered (aliased) examples
 
-Contents
+ML classifiers (XGBoost, AdaBoost) for aliasing detection
 
-Data processing & classical aliasing ML: /mnt/data/process.ipynb
+LSTM-based grid search for aliasing presence prediction
 
-Builds STFT/MFCC datasets and runs classical ML aliasing classifiers (XGBoost / AdaBoost ensembles).
+CNN/LSTM downstream models for class label prediction on filtered vs. unfiltered sets
 
-LSTM aliasing grid search: /mnt/data/LSTM_GS.ipynb
+Difficulty analysis across six sample rates (1 kHz → 22 kHz)
 
-End-to-end LSTM grid search for binary aliasing detection across sample rates.
+📁 Dataset Construction
+Source Corpora
 
-Downstream task analysis: /mnt/data/Difficulty_Separate.ipynb
+UrbanSound8K (U8K)
 
-Trains LSTM/CNN on class labels using only filtered or only unfiltered data to quantify difficulty.
+ESC-50
 
-(Optional, combined views): /mnt/data/Difficulty_Analysis_Joined.ipynb
+MAVD (Zenodo city-sound dataset)
 
-The notebooks above mirror the Python snippets shown in this README.
+Each audio file is processed into 1-second chunks and transformed into aliased / anti-aliased pairs across:
 
-1) Dataset Construction
-Source corpora
+[ 1000, 2000, 4000, 8000, 16000, 22000 ] Hz
 
-UrbanSound8K, ESC-50, MAVD (Zenodo city-sound)
-We read each file, take exact 1-second chunks, and generate paired training examples across target sampling rates:
+🔧 Processing Overview (from process.ipynb)
+1. Aliasing Manipulation
 
-target_rates = [1000, 2000, 4000, 8000, 16000, 22000]
+Unfiltered (aliased)
 
-Aliasing manipulation (core function)
-
-Unfiltered (aliased): resample_poly(chunk, sr, fs)
-
-Filtered (anti-aliased): low-pass at Nyquist(sr) in the original sampling domain, then resample
-
-sos = butter(6, cutoff=sr/2, fs=fs, btype='low', output='sos')
-filtered = sosfilt(sos, chunk)
-filt_rs  = resample_poly(filtered, sr, fs)
+raw = resample_poly(chunk, sr, fs_original)
 
 
-Chunk selection: Optional significance gating to keep chunks with sufficient broadband content (mean-square power and high-frequency energy above thresholds).
+Filtered (anti-aliased)
 
-Features
+sos = butter(6, cutoff=sr/2, fs=fs_original, btype='low', output='sos')
+filtered  = sosfilt(sos, chunk)
+filt_rs   = resample_poly(filtered, sr, fs_original)
 
-STFT (image-like)
+2. Feature Extraction
+STFT features
 
-n_fft=512, hop=n_fft/2, computed after resampling with fs=sr
+STFT computed after resampling using:
 
-Two-pass global min–max across the entire corpus; saved spectrograms are in [0,1].
+n_fft = 512
 
-MFCC (feature-vector–like)
+hop = 256
 
-n_mfcc=20, analysis tied to the target sr (n_fft=sr//2, hop=sr//4)
+Magnitudes are globally normalized using two-pass min-max across all bins.
 
-Z-score per-dimension using train-split statistics only; saved features are already standardized.
+MFCC features
 
-Normalization stats saved as mfcc_norm_stats.npz (keys: mean, std).
+n_mfcc = 20
 
-Directory layout & naming
+n_fft = sr // 2, hop = sr // 4
+
+All MFCC vectors are z-scored using train-split statistics only.
+
+Saved stats:
+
+mfcc_norm_stats.npz  → { mean, std }
+
+📂 Dataset Directory Structure
 Processed_Files/
-    DS_U8K/                # (also DS_ESC, DS_ZEN)
+    DS_U8K/               # UrbanSound8K
+    DS_ESC/               # ESC-50
+    DS_ZEN/               # MAVD (no class labels → class 0)
         22000/
         16000/
         8000/
@@ -73,7 +79,7 @@ Processed_Files/
         2000/
         1000/
             train/
-                filtered/      # .npy files
+                filtered/      # .npy feature files
                 unfiltered/
             validation/
                 filtered/
@@ -83,225 +89,142 @@ Processed_Files/
                 unfiltered/
 
 
-STFT files: each .npy is a min–max normalized magnitude spectrogram (no dB in saved file).
+File naming convention:
 
-MFCC files: each .npy is a flattened & z-scored feature vector.
+<index>-<class>.npy
 
-Filenames: <index>-<class>.npy where <class> comes from the source corpus filename; MAVD uses 0 (no class).
 
-2) Aliasing Presence Classifiers (Binary: filtered vs unfiltered)
+Where <class> comes from the original dataset.
+MAVD uses "0" because there are no class labels.
 
-You’ll find two implementations:
+🧪 Aliasing Presence Classifiers
 
-A) Classical ML (in process.ipynb)
+(Included in process.ipynb)
 
-Loads flattened features per rate/split from the dataset folders above.
+The classical aliasing classifiers operate on flattened STFT/MFCC vectors.
 
-Balances the classes (filtered vs unfiltered) by downsampling.
+Models include:
 
-Trains & evaluates:
+XGBoost
 
-XGBoost (with a lightweight grid on max_depth, learning_rate)
+AdaBoost(RandomForest)
 
-AdaBoost(RandomForest), AdaBoost(DecisionTree)
+AdaBoost(DecisionTree)
 
-Writes per-rate validation metrics to a timestamped CSV.
+Each model is trained per sample rate, per feature type, per dataset.
 
-Entry points (illustrative):
+Outputs:
 
-SAMPLE_RATES = [1000, 2000, 4000, 8000, 16000, 22000]
-DATASETS = {
-    'STFT': [
-        r"D:\Aliasing3\Processed_Files\DS_U8K",
-        r"D:\Aliasing3\Processed_Files\DS_ZEN"
-    ],
-    # 'MFCC': [...]
-}
+Pickled models (models/*.pkl)
 
+CSV performance report:
 
-If mfcc_norm_stats.npz exists in a dataset root, the loader applies the saved z-score at load time (a safety check; MFCC files are already normalized).
+model_performance_<timestamp>.csv
 
-Outputs
+🧠 LSTM Aliasing Classifier (Grid Search)
 
-Trained model pickles per rate: models/{name}_{sr}Hz.pkl
+(From LSTM_GS.ipynb)
 
-CSV summary: model_performance_<timestamp>.csv
+The LSTM classifier performs binary detection:
 
-B) LSTM Grid Search (in LSTM_GS.ipynb)
+0 → unfiltered (aliased)
+1 → filtered   (anti-aliased)
 
-Builds a binary classifier: 0=unfiltered vs 1=filtered
+Pipeline:
 
-Sequence input: (time_steps, feat_dim) from either STFT (2D) or MFCC (reshaped from flat).
+Loads .npy sequences (STFT or MFCC)
 
-Collates variable-length sequences with zero-padding.
+Zero-pads variable-length sequences
 
-Grid search over LSTM hidden_dim and fc_dim per rate.
+Runs grid search over:
 
-Key bits
+LSTM hidden dimension
 
-# Labeling by folder name
-for label, cls in [('unfiltered', 0), ('filtered', 1)]:
-    folder = os.path.join(root_dir, str(sr), split, label)
-    # collect files and labels...
+Fully-connected dimension
 
+Key command example:
 
-Outputs
+grid_search(root_dir, sr=8000)
 
-Best F1 per configuration, printed to console (CSV save is scaffolded in the code).
 
-Use this to compare how strongly aliasing signatures are learnable at each sample rate.
+Runs grid search and prints F1 scores for each configuration.
 
-3) Downstream Task Analysis (Difficulty of classifying sound events)
+🎯 Downstream Task Difficulty
 
-Goal: quantify how aliasing affects standard classification (e.g., ESC-50 class IDs).
-We train on only filtered or only unfiltered subsets and predict the class label, not aliasing.
+(From Difficulty_Separate.ipynb)
 
-Notebook: /mnt/data/Difficulty_Separate.ipynb
+This experiment trains class label predictors (ESC-50 or U8K classes), but using only filtered or only unfiltered data.
 
-What it does
+This answers:
+“How much does aliasing harm (or help) downstream environmental sound classification?”
 
-Loops over:
+Models:
 
-Feature type: STFT or MFCC
+LSTMClassifier
 
-Dataset root (e.g., DS_ESC, DS_U8K, …)
+CNNClassifier
 
-Sample rates: 1k → 22k
+Each trained per:
 
-Model type: LSTM / CNN
+Feature type (STFT or MFCC)
 
-Subset: filtered or unfiltered (one at a time)
+Sample rate (1 kHz → 22 kHz)
 
-Labels are extracted from the filenames: <index>-<class>.npy.
+Subset (filtered only OR unfiltered only)
 
-For each config:
+Outputs:
 
-Train for epochs with best-val checkpointing (saves each epoch, reloads best).
+difficulty_separate_by_subset_esc.csv
 
-Evaluate on the matching test split (filtered only or unfiltered only).
+📊 Reproducibility & Normalization
 
-Log best_val_acc and test_acc.
+1-second chunking
 
-Models
+STFT normalization: global min-max
 
-LSTMClassifier: 3-layer LSTM → last hidden → FC → num_classes
+MFCC normalization: per-dimension z-score (train-split stats)
 
-CNNClassifier: 3 conv layers + adaptive global pooling → MLP head
-(expects input as (B, T, D); internally permutes to (B, 1, D, T))
+GPU-safe checkpointing for downstream tasks
 
-Output
+Deterministic random seeds in LSTM grid search
 
-CSV: difficulty_separate_by_subset_esc.csv (per-config test accuracy).
+🚀 Installation
+pip install numpy scipy librosa soundfile tqdm pandas scikit-learn xgboost torch matplotlib
 
-Interpretation: If accuracy drops on a given subset (e.g., unfiltered), aliasing harms the downstream task at that rate/feature.
 
-4) Reproducibility & Normalization
+For GPU acceleration:
 
-Chunking: exact 1-second windows (first pass may discard windows that fail significance gates).
+https://pytorch.org/get-started/locally/
 
-STFT: n_fft=512, hop=256, computed after resampling with fs=sr.
+🧭 Usage Summary
+Build datasets:
 
-Dataset saves magnitudes with global min–max scaling.
+Run process.ipynb (STFT & MFCC).
 
-Visualizations may display dB for readability (this is only for plotting).
+Classical aliasing classifiers:
 
-MFCC: n_mfcc=20, n_fft=sr//2, hop=sr//4; Mel filterbank implicitly capped by sr/2.
+Also inside process.ipynb.
 
-Saved features are z-scored using train-split statistics (no leakage).
+LSTM aliasing grid search:
 
-Stats stored at the dataset root: mfcc_norm_stats.npz.
+Run cells inside LSTM_GS.ipynb (per sample rate).
 
-5) Installation
-# (Recommended) Create a virtual environment first
-python -m venv venv
-source venv/bin/activate         # Windows: venv\Scripts\activate
+Downstream task difficulty:
 
-pip install -U pip
-pip install numpy scipy librosa soundfile tqdm matplotlib pandas scikit-learn xgboost torch torchvision torchaudio
+Run Difficulty_Separate.ipynb.
 
+📌 Citation
 
-GPU (optional): install CUDA-enabled PyTorch per the official selector
-.
+If you use this repository, please cite:
 
-6) Quickstart
-A) Build datasets (STFT & MFCC)
+UrbanSound8K
 
-Open /mnt/data/process.ipynb
- and run the cells that:
+ESC-50
 
-Collect file lists (UrbanSound8K, ESC-50, MAVD).
+MAVD / Zenodo city-sound dataset
 
-(STFT) Two-pass global min–max with find_global_bounds.
+This repository (link to your GitHub page)
 
-Save: build_and_save_dataset(...) → Processed_Files/DS_*/*/split/(filtered|unfiltered)/...
+📝 License
 
-(MFCC) Save via create_mfcc_dataset(...) (z-score saved).
-
-B) Aliasing presence (classical ML)
-
-In the same notebook, run the modeling cells:
-
-Select dataset roots in DATASETS
-
-Run the training loop to produce validation metrics and model pickles.
-
-C) Aliasing presence (LSTM grid search)
-
-Open /mnt/data/LSTM_GS.ipynb
-:
-
-Set root to one dataset root (e.g., DS_ESC_MFCC or DS_ZEN).
-
-Run grid_search(root, sr=...) for each sample rate.
-
-D) Downstream task difficulty
-
-Open /mnt/data/Difficulty_Separate.ipynb
-:
-
-Configure DATASETS, frequencies, subsets, epochs.
-
-Run the experiment loop; results go to difficulty_separate_by_subset_esc.csv.
-
-7) Tips & Conventions
-
-Color scale consistency (plots)
-
-STFT (dB): fix color limits, e.g., vmin=-80, vmax=0 for truthful comparisons across panels.
-
-MFCC: choose a fixed range or compute global min/max across panels before plotting.
-
-Exact method match
-
-STFT: leave boundary at SciPy’s default (zero-pad) to match the dataset builder.
-
-MFCC: use exactly n_fft=sr//2, hop=sr//4 to mirror the saved features.
-
-MAVD classes
-
-MAVD is not class-labeled; files are saved with class 0. Use MAVD primarily for aliasing presence, not downstream class accuracy.
-
-8) Results & Reporting
-
-Aliasing presence: report metrics per rate (1k→22k) to show where aliasing is most detectable.
-
-Downstream difficulty: compare test accuracy for filtered-only vs unfiltered-only at each rate/feature to quantify aliasing impact on real tasks.
-
-9) Citation
-
-If you use this pipeline or datasets in academic work, please cite the repository and the original source datasets (UrbanSound8K, ESC-50, MAVD).
-
-
-Questions / Issues
-
-Open an issue with:
-
-dataset root path(s) used,
-
-feature type (STFT vs MFCC),
-
-sample rate(s),
-
-exact error trace (if any).
-
-Happy aliasing hunting 🔍🎧
+Add your license here (e.g., MIT License).
